@@ -7,16 +7,77 @@ import type { TableResult } from "./types.ts";
 /**
  * Formatea un valor según su tipo para Oracle SQL
  * @param value - Valor a formatear
+ * @param fieldName - Nombre del campo (para detectar fechas)
  * @returns Valor formateado para Oracle
  */
-export function formatOracleValue(value: unknown): string {
+export function formatOracleValue(value: unknown, fieldName?: string): string {
   if (value === null || value === undefined) return 'NULL';
+  
+  // Detectar fechas por nombre de campo o formato
+  if (typeof value === 'string' && (
+    (typeof fieldName === 'string' && fieldName.toLowerCase().includes('fecha')) ||
+    (typeof fieldName === 'string' && fieldName.toLowerCase().includes('date')) ||
+    /^\d{1,2}-\d{1,2}-\d{4}$/.test(value) ||  // DD-MM-YYYY
+    /^\d{4}-\d{1,2}-\d{1,2}$/.test(value) ||  // YYYY-MM-DD
+    /^\d{1,2}\/\d{1,2}\/\d{4}$/.test(value)   // DD/MM/YYYY
+  )) {
+    console.log(`🔄 Convirtiendo fecha: ${fieldName} = ${value}`);
+    return convertDateToOracle(value);
+  }
+  
   if (typeof value === 'string') return `'${value.replace(/'/g, "''")}'`;
   if (typeof value === 'number') return value.toString();
   if (typeof value === 'boolean') return value ? "'Y'" : "'N'";
   if (value instanceof Date) return `TO_DATE('${value.toISOString().slice(0, 19).replace('T', ' ')}', 'YYYY-MM-DD HH24:MI:SS')`;
   if (typeof value === 'object') return `'${JSON.stringify(value).replace(/'/g, "''")}'`;
   return `'${String(value).replace(/'/g, "''")}'`;
+}
+
+/**
+ * Convierte diferentes formatos de fecha a Oracle TO_DATE
+ * @param dateStr - String de fecha en varios formatos
+ * @returns Función TO_DATE de Oracle
+ */
+function convertDateToOracle(dateStr: string): string {
+  try {
+    let date: Date;
+    
+    // Detectar formato DD-MM-YYYY (como '25-08-2025')
+    if (/^\d{1,2}-\d{1,2}-\d{4}$/.test(dateStr)) {
+      const [day, month, year] = dateStr.split('-');
+      date = new Date(parseInt(year), parseInt(month) - 1, parseInt(day));
+    }
+    // Detectar formato YYYY-MM-DD
+    else if (/^\d{4}-\d{1,2}-\d{1,2}$/.test(dateStr)) {
+      date = new Date(dateStr);
+    }
+    // Detectar formato DD/MM/YYYY
+    else if (/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(dateStr)) {
+      const [day, month, year] = dateStr.split('/');
+      date = new Date(parseInt(year), parseInt(month) - 1, parseInt(day));
+    }
+    // Intentar parsear directamente
+    else {
+      date = new Date(dateStr);
+    }
+    
+    // Verificar que la fecha es válida
+    if (isNaN(date.getTime())) {
+      console.warn(`⚠️ Fecha inválida: ${dateStr}, usando como string`);
+      return `'${dateStr.replace(/'/g, "''")}'`;
+    }
+    
+    // Formatear para Oracle (DD-MM-YYYY)
+    const day = date.getDate().toString().padStart(2, '0');
+    const month = (date.getMonth() + 1).toString().padStart(2, '0');
+    const year = date.getFullYear();
+    
+    return `TO_DATE('${day}-${month}-${year}', 'DD-MM-YYYY')`;
+    
+  } catch (error) {
+    console.warn(`⚠️ Error procesando fecha: ${dateStr}, usando como string`);
+    return `'${dateStr.replace(/'/g, "''")}'`;
+  }
 }
 
 /**
@@ -58,8 +119,10 @@ export function jsonToOracleInsert(data: Record<string, unknown>, tableName: str
   const values = Object.values(filteredData);
   const columns = keys.join(', ');
 
-  // Formatear valores según el tipo de dato para Oracle
-  const formattedValues = values.map(formatOracleValue).join(', ');
+  // Formatear valores según el tipo de dato para Oracle, pasando el nombre del campo
+  const formattedValues = keys.map((key, index) => 
+    formatOracleValue(values[index], key)
+  ).join(', ');
 
   return `INSERT INTO ${tableName} (${columns}) VALUES (${formattedValues});`;
 }
@@ -98,7 +161,10 @@ export function generateBatchInsert(items: Array<Record<string, unknown>>, table
   const values = items.map(item => {
     const filteredItem = { ...item };
     delete filteredItem.tableName;
-    const vals = Object.values(filteredItem).map(formatOracleValue).join(', ');
+    const keys = Object.keys(filteredItem);
+    const vals = keys.map((key, index) => 
+      formatOracleValue(Object.values(filteredItem)[index], key)
+    ).join(', ');
     return `  INTO ${tableName} (${columns}) VALUES (${vals})`;
   }).join('\n');
 

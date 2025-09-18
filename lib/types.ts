@@ -17,6 +17,7 @@ export interface SingleObjectResponse {
   insert: string;
   createTable: string;
   generatedAt: string;
+  sessionId?: string; // ID de sesión para tracking de logs
 }
 
 export interface ArrayResponse {
@@ -27,6 +28,7 @@ export interface ArrayResponse {
     totalTables: number;
     totalRecords: number;
     generatedAt: string;
+    sessionId?: string; // ID de sesión para tracking de logs
   };
 }
 
