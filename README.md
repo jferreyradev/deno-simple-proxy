@@ -1,101 +1,57 @@
-# 🌐 Deno Oracle Proxy# 🚀 Deno Proxy con Generación de SQL para Oracle
+# 🚀 Deno Proxy con Generación de SQL para Oracle
 
+Servidor proxy construido con Deno que convierte JSON a statements INSERT de Oracle. Soporta objetos individuales y arrays con múltiples tablas.
 
+## ✨ Características
 
-Un proxy HTTP construido con Deno que convierte JSON a statements INSERT de Oracle SQL. Incluye soporte completo para CORS, reenvío a APIs externas y múltiples endpoints.Servidor proxy construido con Deno que convierte JSON a statements INSERT de Oracle. Soporta objetos individuales y arrays con múltiples tablas.
-
-
-
-## 🚀 Características## ✨ Características
-
-
-
-- ✅ **Conversión JSON a Oracle SQL** - Transforma objetos JSON en statements INSERT- ✅ **Conversión automática** de JSON a SQL INSERT de Oracle
-
-- ✅ **Soporte para arrays** - Procesa múltiples objetos con agrupación por tabla- ✅ **Manejo de arrays** con múltiples tablas usando campo `tableName`
-
-- ✅ **Generación automática de CREATE TABLE** - Infiere tipos de datos- ✅ **Generación de CREATE TABLE** basado en tipos de datos
-
-- ✅ **BATCH INSERT** - Optimización con INSERT ALL para múltiples registros- ✅ **BATCH INSERT** (INSERT ALL) para mejor rendimiento
-
-- ✅ **CORS completo** - Configuración flexible para navegadores web- ✅ **Tipos de datos Oracle** correctos (VARCHAR2, NUMBER, DATE, CLOB)
-
-- ✅ **Reenvío automático** - Envía resultados a APIs externas- ✅ **Escapado de caracteres** para prevenir errores SQL
-
-- ✅ **Múltiples endpoints** - API REST con validación y documentación- ✅ **Soporte completo CORS** - funciona desde navegadores web
-
-- ✅ **Sistema de routing** - Manejo modular de rutas- ✅ **Reenvío automático** a APIs destino
-
+- ✅ **Conversión automática** de JSON a SQL INSERT de Oracle
+- ✅ **Manejo de arrays** con múltiples tablas usando campo `tableName`
+- ✅ **Generación de CREATE TABLE** basado en tipos de datos
+- ✅ **BATCH INSERT** (INSERT ALL) para mejor rendimiento
+- ✅ **Tipos de datos Oracle** correctos (VARCHAR2, NUMBER, DATE, CLOB)
+- ✅ **Escapado de caracteres** para prevenir errores SQL
+- ✅ **Soporte completo CORS** - funciona desde navegadores web
+- ✅ **Reenvío automático** a APIs destino
 - ✅ **Arquitectura modular** - fácil mantenimiento
 
-## 📦 Instalación y Uso
+##  Uso Rápido
 
-## 🚀 Uso Rápido
-
+### 1. Iniciar el servidor
 ```bash
+deno run --allow-net main.ts
+# o usando las tareas definidas
+deno task start
 
-# Clonar el repositorio### 1. Iniciar el servidor
-
-git clone <url-del-repo>```bash
-
-cd deno-simple-proxydeno run --allow-net main.ts
-
+# Modo desarrollo (con watch)
+deno task dev
 ```
 
-# Iniciar el servidor
-
-deno task start### 2. Enviar JSON
-
+### 2. Enviar JSON
 ```bash
-
-# Modo desarrollo (con watch)# POST a http://localhost:8003
-
-deno task devContent-Type: application/json
-
-```
+# POST a http://localhost:8003
+# Content-Type: application/json
 
 # Ejemplo 1: Objeto individual
-
-El servidor iniciará en `http://localhost:8003`{
-
+{
   "tableName": "usuarios",
-
-## 📍 Endpoints Disponibles  "id": 1,
-
+  "id": 1,
   "nombre": "Juan Pérez",
-
-### 🔄 POST `/api/oracle/convert`  "email": "juan@email.com",
-
-Convierte JSON a SQL INSERT de Oracle  "edad": 30,
-
+  "email": "juan@email.com",
+  "edad": 30,
   "activo": true
+}
 
-**Ejemplo - Objeto Individual:**}
-
-```bash
-
-curl -X POST http://localhost:8003/api/oracle/convert \# Ejemplo 2: Array con múltiples tablas
-
-  -H "Content-Type: application/json" \[
-
-  -d '{  {
-
-    "tableName": "usuarios",    "tableName": "Empleado",
-
-    "id": 1,    "idEmpleado": 1,
-
-    "nombre": "Juan Pérez",    "nombre": "MARIA CONSTANZA",
-
-    "email": "juan@email.com",    "apellido": "CAINZO",
-
-    "edad": 30,    "cuit": "27310016719"
-
-    "activo": true  },
-
-  }'  {
-
-```    "tableName": "Presentacion",
-
+# Ejemplo 2: Array con múltiples tablas
+[
+  {
+    "tableName": "Empleado",
+    "idEmpleado": 1,
+    "nombre": "MARIA CONSTANZA",
+    "apellido": "CAINZO",
+    "cuit": "27310016719"
+  },
+  {
+    "tableName": "Presentacion",
     "idPresentacion": 1,
 
 **Respuesta:**    "periodo": 2025,

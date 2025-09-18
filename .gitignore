@@ -1,0 +1,11 @@
+# Logs
+logs/
+*.log
+
+# Deno
+.deno/
+
+# Otros
+.env
+.DS_Store
+Thumbs.db
