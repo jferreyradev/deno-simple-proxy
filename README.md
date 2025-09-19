@@ -6,7 +6,7 @@ Servidor proxy construido con Deno que convierte JSON a statements INSERT de Ora
 
 - ✅ **Conversión automática** de JSON a SQL INSERT de Oracle
 - ✅ **Manejo de arrays** con múltiples tablas usando campo `tableName`
-- ✅ **Generación de CREATE TABLE** basado en tipos de datos
+- ✅ **Generación de CREATE TABLE** basado en tipos de datos (solo en respuesta JSON)
 - ✅ **BATCH INSERT** (INSERT ALL) para mejor rendimiento
 - ✅ **Tipos de datos Oracle** correctos (VARCHAR2, NUMBER, DATE, CLOB)
 - ✅ **Escapado de caracteres** para prevenir errores SQL
@@ -14,11 +14,41 @@ Servidor proxy construido con Deno que convierte JSON a statements INSERT de Ora
 - ✅ **Reenvío automático** a APIs destino
 - ✅ **Arquitectura modular** - fácil mantenimiento
 
+## ⚠️ Requisitos Importantes
+
+### Tablas deben existir previamente
+
+**El sistema genera SOLO INSERT statements** - las tablas deben estar creadas previamente en la base de datos Oracle.
+
+**Para evitar errores ORA-00942** (table or view does not exist):
+
+1. **Crea las tablas manualmente** antes de usar el proxy
+2. **Usa los CREATE TABLE generados** (disponibles en la respuesta JSON) 
+3. **Verifica que los nombres de tabla** coincidan exactamente
+
+**Ejemplo de flujo recomendado**:
+```bash
+# 1. Enviar JSON al proxy para obtener CREATE TABLE
+POST /api/oracle/convert
+{
+  "tableName": "usuarios",
+  "id": 1,
+  "nombre": "Juan"
+}
+
+# 2. Usar el CREATE TABLE generado en la respuesta
+# response.createTable: "CREATE TABLE usuarios (id NUMBER(10), nombre VARCHAR2(4000))"
+
+# 3. Ejecutar CREATE TABLE en Oracle primero
+# 4. Luego usar el INSERT generado
+# response.insert: "INSERT INTO usuarios (id, nombre) VALUES (1, 'Juan')"
+```
+
 ##  Uso Rápido
 
 ### 1. Iniciar el servidor
 ```bash
-deno run --allow-net main.ts
+deno run --allow-net --allow-write main.ts
 # o usando las tareas definidas
 deno task start
 
@@ -434,3 +464,129 @@ Tu proxy está configurado y listo para:
 - ✅ **Integrarse fácilmente** con aplicaciones React, Vue, Angular
 
 **¡Perfecto para integrar con sistemas existentes y aplicaciones web modernas!** 🚀
+
+## 🔧 Endpoint de Procedimientos Almacenados
+
+### POST `/api/oracle/procedure`
+
+Ejecuta procedimientos almacenados de Oracle con parámetros.
+
+#### 📤 Procedimiento Individual
+
+```bash
+curl -X POST http://localhost:8003/api/oracle/procedure \
+  -H "Content-Type: application/json" \
+  -d '{
+    "procedureName": "ganancias.ActualizarEmpleado",
+    "parameters": {
+      "p_id": 9999,
+      "p_nombre": "MARIA CONSTANZA",
+      "p_apellido": "CAINZO",
+      "p_activo": true
+    }
+  }'
+```
+
+**Respuesta:**
+```json
+{
+  "success": true,
+  "inputType": "procedure",
+  "procedureName": "ganancias.ActualizarEmpleado",
+  "call": "BEGIN\n  GANANCIAS.ACTUALIZAREMPLEADO(p_id => 9999, p_nombre => 'MARIA CONSTANZA', p_apellido => 'CAINZO', p_activo => 'Y');\nEND;",
+  "generatedAt": "2025-09-19T17:58:00.000Z"
+}
+```
+
+#### 📤 Procedimiento en Paquete (esquema.paquete.procedimiento)
+
+```bash
+curl -X POST http://localhost:8003/api/oracle/procedure \
+  -H "Content-Type: application/json" \
+  -d '{
+    "procedureName": "workflow.controles.CARGARESUMENLIQ",
+    "parameters": {
+      "vPERIODO": "01-09-2025",
+      "vIDTIPOLIQ": 1,
+      "vIDGRUPO": 0,
+      "vGRUPOREP": 9
+    }
+  }'
+```
+
+**Respuesta:**
+```json
+{
+  "success": true,
+  "inputType": "procedure",
+  "procedureName": "workflow.controles.CARGARESUMENLIQ",
+  "call": "BEGIN\n  WORKFLOW.CONTROLES.CARGARESUMENLIQ(vPERIODO => TO_DATE('01-09-2025', 'DD-MM-YYYY'), vIDTIPOLIQ => 1, vIDGRUPO => 0, vGRUPOREP => 9);\nEND;",
+  "generatedAt": "2025-09-19T18:15:00.000Z"
+}
+```
+
+#### 📤 Múltiples Procedimientos
+
+```bash
+curl -X POST http://localhost:8003/api/oracle/procedure \
+  -H "Content-Type: application/json" \
+  -d '[
+    {
+      "procedureName": "ganancias.InsertarEmpleado",
+      "parameters": {
+        "p_nombre": "Juan Perez",
+        "p_email": "juan@empresa.com"
+      }
+    },
+    {
+      "procedureName": "auditoria.RegistrarAcceso",
+      "parameters": {
+        "p_usuario": "admin",
+        "p_fecha": "19-09-2025"
+      }
+    }
+  ]'
+```
+
+**Respuesta:**
+```json
+{
+  "success": true,
+  "inputType": "multiple-procedures",
+  "procedures": [
+    { "procedureName": "ganancias.InsertarEmpleado", "parameterCount": 2 },
+    { "procedureName": "auditoria.RegistrarAcceso", "parameterCount": 2 }
+  ],
+  "call": "BEGIN\n  GANANCIAS.INSERTAREMPLEADO(p_nombre => 'Juan Perez', p_email => 'juan@empresa.com');\n  AUDITORIA.REGISTRARACCESO(p_usuario => 'admin', p_fecha => '19-09-2025');\n  COMMIT;\nEND;",
+  "summary": {
+    "totalProcedures": 2,
+    "generatedAt": "2025-09-19T17:58:00.000Z"
+  }
+}
+```
+
+#### 🎯 Características del Endpoint de Procedimientos
+
+- ✅ **Soporte esquema.procedimiento**: `ganancias.ActualizarEmpleado`
+- ✅ **Soporte paquetes**: `workflow.controles.CARGARESUMENLIQ`
+- ✅ **Formatos válidos**: `procedimiento`, `esquema.procedimiento`, `esquema.paquete.procedimiento`
+- ✅ **Parámetros nombrados**: `p_id => 9999`
+- ✅ **Tipos automáticos**: Strings, Numbers, Dates, Booleans
+- ✅ **Múltiples procedimientos**: Ejecución en transacción
+- ✅ **Validación**: Nombres y parámetros válidos
+- ✅ **Bloques PL/SQL**: `BEGIN ... END;` listos para Oracle
+
+#### 🔄 Reenvío Automático
+
+El procedimiento generado se reenvía automáticamente a la URL configurada que termine en `/procedimiento`:
+
+```
+http://10.6.46.114:8083/procedimiento
+```
+
+El payload enviado será:
+```json
+{
+  "query": "BEGIN\n  GANANCIAS.ACTUALIZAREMPLEADO(p_id => 9999, ...);\nEND;"
+}
+```

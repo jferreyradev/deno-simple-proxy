@@ -74,7 +74,7 @@ function convertDateToOracle(dateStr: string): string {
     
     return `TO_DATE('${day}-${month}-${year}', 'DD-MM-YYYY')`;
     
-  } catch (error) {
+  } catch (_error) {
     console.warn(`⚠️ Error procesando fecha: ${dateStr}, usando como string`);
     return `'${dateStr.replace(/'/g, "''")}'`;
   }
@@ -152,20 +152,41 @@ export function generateCreateTable(data: Record<string, unknown>, tableName: st
  * @returns Statement INSERT ALL de Oracle
  */
 export function generateBatchInsert(items: Array<Record<string, unknown>>, tableName: string): string {
-  if (items.length === 0) return '';
+  if (!items || items.length === 0) return '';
+  
+  // Validar que tableName no esté vacío
+  if (!tableName || tableName.trim().length === 0) {
+    tableName = "DATA_TABLE";
+  }
   
   const firstItem = { ...items[0] };
   delete firstItem.tableName;
-  const columns = Object.keys(firstItem).join(', ');
+  const columns = Object.keys(firstItem);
+  
+  // Validar que hay columnas después de filtrar tableName
+  if (columns.length === 0) {
+    throw new Error("No hay columnas válidas después de filtrar tableName");
+  }
+  
+  const columnStr = columns.join(', ');
   
   const values = items.map(item => {
     const filteredItem = { ...item };
     delete filteredItem.tableName;
     const keys = Object.keys(filteredItem);
+    
+    // Asegurar que todas las filas tengan las mismas columnas
+    if (keys.length !== columns.length || !keys.every(key => columns.includes(key))) {
+      console.warn(`⚠️ Inconsistencia en columnas para tabla ${tableName}`, {
+        expected: columns,
+        actual: keys
+      });
+    }
+    
     const vals = keys.map((key, index) => 
       formatOracleValue(Object.values(filteredItem)[index], key)
     ).join(', ');
-    return `  INTO ${tableName} (${columns}) VALUES (${vals})`;
+    return `  INTO ${tableName} (${columnStr}) VALUES (${vals})`;
   }).join('\n');
 
   return `INSERT ALL\n${values}\nSELECT * FROM dual;`;
@@ -178,15 +199,53 @@ export function generateBatchInsert(items: Array<Record<string, unknown>>, table
  * @returns Array con SQL agrupado por tabla
  */
 export function processJsonArray(jsonArray: Array<Record<string, unknown>>): TableResult[] {
+  if (!jsonArray || !Array.isArray(jsonArray) || jsonArray.length === 0) {
+    throw new Error("El array JSON no puede estar vacío y debe ser un array válido");
+  }
+
   const tableGroups: Record<string, Array<Record<string, unknown>>> = {};
 
   // Agrupar objetos por tabla
   for (const item of jsonArray) {
-    const tableName = (item.tableName as string) || "DATA_TABLE";
-    if (!tableGroups[tableName]) {
-      tableGroups[tableName] = [];
+    if (!item || typeof item !== 'object' || Array.isArray(item)) {
+      console.warn("⚠️ Item inválido en array, saltando:", item);
+      continue;
     }
-    tableGroups[tableName].push(item);
+    
+    const tableName = (item.tableName as string) || "DATA_TABLE";
+    
+    // Validar y sanitizar nombre de tabla preservando el formato esquema.tabla
+    let sanitizedTableName = tableName.toUpperCase();
+    
+    // Verificar si tiene formato esquema.tabla válido
+    if (tableName.includes('.')) {
+      const parts = tableName.split('.');
+      if (parts.length === 2 && parts[0] && parts[1]) {
+        // Formato válido esquema.tabla - solo convertir a mayúsculas
+        sanitizedTableName = `${parts[0].toUpperCase()}.${parts[1].toUpperCase()}`;
+      } else {
+        // Formato inválido - usar sanitización completa
+        sanitizedTableName = tableName.replace(/[^a-zA-Z0-9_.]/g, '_').toUpperCase();
+        console.warn(`⚠️ Formato de tabla inválido, sanitizado: ${tableName} -> ${sanitizedTableName}`);
+      }
+    } else {
+      // Sin esquema - solo validar caracteres y convertir a mayúsculas
+      const cleanName = tableName.replace(/[^a-zA-Z0-9_]/g, '_').toUpperCase();
+      if (cleanName !== tableName.toUpperCase()) {
+        console.warn(`⚠️ Nombre de tabla sanitizado: ${tableName} -> ${cleanName}`);
+      }
+      sanitizedTableName = cleanName;
+    }
+    
+    if (!tableGroups[sanitizedTableName]) {
+      tableGroups[sanitizedTableName] = [];
+    }
+    tableGroups[sanitizedTableName].push(item);
+  }
+
+  // Validar que haya al menos una tabla con datos
+  if (Object.keys(tableGroups).length === 0) {
+    throw new Error("No se encontraron datos válidos para procesar");
   }
 
   // Generar SQL para cada tabla
@@ -194,7 +253,97 @@ export function processJsonArray(jsonArray: Array<Record<string, unknown>>): Tab
     tableName,
     recordCount: items.length,
     inserts: items.map(item => jsonToOracleInsert(item, tableName)),
-    createTable: generateCreateTable(items[0], tableName),
     batchInsert: generateBatchInsert(items, tableName)
   }));
+}
+
+/**
+ * 🔧 Genera llamada a procedimiento almacenado Oracle
+ * @param procedureName - Nombre del procedimiento (puede incluir esquema.procedimiento)
+ * @param parameters - Objeto con parámetros del procedimiento
+ * @returns Statement de llamada al procedimiento
+ */
+export function generateProcedureCall(
+  procedureName: string,
+  parameters: Record<string, unknown> = {}
+): string {
+  if (!procedureName || typeof procedureName !== 'string') {
+    throw new Error("El nombre del procedimiento es requerido y debe ser un string");
+  }
+
+  // Sanitizar nombre del procedimiento (permitir esquema.procedimiento o esquema.paquete.procedimiento)
+  let sanitizedProcName = procedureName.toUpperCase();
+  
+  if (procedureName.includes('.')) {
+    const parts = procedureName.split('.');
+    if (parts.length >= 2 && parts.length <= 3 && parts.every(part => part.trim())) {
+      // Formato válido: esquema.procedimiento o esquema.paquete.procedimiento
+      sanitizedProcName = parts.map(part => part.toUpperCase()).join('.');
+    } else {
+      throw new Error(`Formato de procedimiento inválido: ${procedureName}. Use 'esquema.procedimiento' o 'esquema.paquete.procedimiento' o 'procedimiento'`);
+    }
+  } else {
+    // Validar caracteres del nombre
+    if (!/^[a-zA-Z0-9_$#]+$/.test(procedureName)) {
+      throw new Error(`Nombre de procedimiento contiene caracteres inválidos: ${procedureName}`);
+    }
+  }
+
+  // Generar lista de parámetros
+  const paramNames = Object.keys(parameters);
+  const paramValues = paramNames.map(name => {
+    const value = parameters[name];
+    return formatOracleValue(value, name);
+  });
+
+  // Construir llamada al procedimiento
+  if (paramNames.length === 0) {
+    // Sin parámetros
+    return `BEGIN\n  ${sanitizedProcName};\nEND;`;
+  } else {
+    // Con parámetros nombrados
+    const namedParams = paramNames.map((name, index) => `${name} => ${paramValues[index]}`);
+    return `BEGIN\n  ${sanitizedProcName}(${namedParams.join(', ')});\nEND;`;
+  }
+}
+
+/**
+ * 🔧 Genera múltiples llamadas a procedimientos
+ * @param procedures - Array de objetos con procedureName y parameters
+ * @returns Bloque PL/SQL con múltiples llamadas
+ */
+export function generateMultipleProcedureCalls(
+  procedures: Array<{ procedureName: string; parameters?: Record<string, unknown> }>
+): string {
+  if (!Array.isArray(procedures) || procedures.length === 0) {
+    throw new Error("Se requiere un array con al menos un procedimiento");
+  }
+
+  const calls: string[] = [];
+  
+  for (const proc of procedures) {
+    if (!proc.procedureName) {
+      throw new Error("Cada procedimiento debe tener un 'procedureName'");
+    }
+
+    const sanitizedProcName = proc.procedureName.includes('.') 
+      ? proc.procedureName.split('.').map(p => p.toUpperCase()).join('.')
+      : proc.procedureName.toUpperCase();
+
+    const parameters = proc.parameters || {};
+    const paramNames = Object.keys(parameters);
+    
+    if (paramNames.length === 0) {
+      calls.push(`  ${sanitizedProcName};`);
+    } else {
+      const paramValues = paramNames.map(name => {
+        const value = parameters[name];
+        return formatOracleValue(value, name);
+      });
+      const namedParams = paramNames.map((name, index) => `${name} => ${paramValues[index]}`);
+      calls.push(`  ${sanitizedProcName}(${namedParams.join(', ')});`);
+    }
+  }
+
+  return `BEGIN\n${calls.join('\n')}\n  COMMIT;\nEND;`;
 }

@@ -17,7 +17,9 @@ import {
   listTransformersHandler,
   setBearerTokenHandler,
   getForwardLogsHandler,
-  getForwardStatsHandler
+  getForwardStatsHandler,
+  procedureHandler,
+  procedureExamplesHandler
 } from "./endpoints.ts";
 import { logger } from "./logger.ts";
 
@@ -55,7 +57,7 @@ interface EndpointTransformer {
   headers?: Record<string, string>;
 }
 
-let ENDPOINT_TRANSFORMERS: Map<string, EndpointTransformer> = new Map();
+const ENDPOINT_TRANSFORMERS: Map<string, EndpointTransformer> = new Map();
 
 export function setDestinationAPI(
   url: string, 
@@ -84,7 +86,7 @@ export function setPayloadTransformer(
 
 /**
  * 🎯 Configura un transformer específico para un endpoint
- * @param endpointPattern - Patron del endpoint (ej: asterisco/exec, localhost:8081/asterisco, api.example.com/sql)
+ * @param endpointPattern - Patron del endpoint (ej: "wildcard/exec", "localhost:8081/wildcard", "api.example.com/sql")
  * @param transformer - Función transformadora específica para este endpoint
  * @param options - Opciones adicionales (metodo HTTP, headers)
  */
@@ -200,6 +202,8 @@ function handleOptionsRequest(req: Request): Response {
 const router = new Router();
 
 router.post("/api/oracle/convert", convertToOracleHandler);
+router.post("/api/oracle/procedure", procedureHandler);
+router.get("/api/oracle/procedure", (_req: Request) => Promise.resolve(procedureExamplesHandler()));
 router.get("/api/health", (_req: Request) => Promise.resolve(healthHandler()));
 router.get("/api/info", (_req: Request) => Promise.resolve(infoHandler()));
 router.get("/api/examples", (_req: Request) => Promise.resolve(examplesHandler()));
@@ -561,6 +565,8 @@ export function startServer(port: number = 8003): void {
       "GET /api/info", 
       "GET /api/examples",
       "POST /api/oracle/convert",
+      "GET /api/oracle/procedure",
+      "POST /api/oracle/procedure",
       "POST /api/validate"
     ]
   });
@@ -571,6 +577,8 @@ export function startServer(port: number = 8003): void {
   console.log("   • GET /api/info - Información de la API");
   console.log("   • GET /api/examples - Ejemplos de uso");
   console.log("   • POST /api/oracle/convert - Conversión JSON a Oracle SQL");
+  console.log("   • GET /api/oracle/procedure - Ejemplos de procedimientos");
+  console.log("   • POST /api/oracle/procedure - Ejecutar procedimientos almacenados");
   console.log("   • POST /api/validate - Validar JSON");
 
   // Usar Deno.serve nativo en lugar de importar

@@ -398,6 +398,61 @@ export class SqlLogger {
       return [];
     }
   }
+
+  /**
+   * 🔧 Registra llamada a procedimiento almacenado
+   */
+  async logProcedureCall(
+    request: Request,
+    procedureData: string | unknown[],
+    procedureCall: string,
+    metadata?: { processingTime?: number; dataSize?: number; [key: string]: unknown }
+  ): Promise<string> {
+    const sessionId = this.generateSessionId();
+    
+    const procedureNames = Array.isArray(procedureData) 
+      ? procedureData.map((p: unknown) => {
+          const proc = p as { procedureName?: string };
+          return proc.procedureName || 'UNKNOWN';
+        })
+      : [typeof procedureData === 'string' ? procedureData : 'UNKNOWN'];
+
+    const entry: SqlLogEntry = {
+      timestamp: new Date().toISOString(),
+      sessionId,
+      operationType: Array.isArray(procedureData) ? 'batch' : 'single',
+      tables: procedureNames, // Reutilizamos el campo tables para nombres de procedimientos
+      insertCount: 1,
+      sourceInfo: {
+        method: request.method,
+        url: request.url,
+        userAgent: request.headers.get('user-agent') || undefined,
+        ip: request.headers.get('x-forwarded-for') || request.headers.get('x-real-ip') || undefined
+      },
+      sqlStatements: [procedureCall],
+      metadata
+    };
+
+    const formattedLog = this.formatSqlLogEntry(entry);
+    await this.writeToFile(formattedLog);
+    return sessionId;
+  }
+
+  /**
+   * 📝 Registra error asociado a una sesión
+   */
+  async logError(sessionId: string, errorMessage: string): Promise<void> {
+    const errorEntry = `
+${'='.repeat(80)}
+ERROR LOGGED
+SESSION ID: ${sessionId}
+TIMESTAMP: ${new Date().toISOString()}
+ERROR: ${errorMessage}
+${'='.repeat(80)}
+`;
+    
+    await this.writeToFile(errorEntry);
+  }
 }
 
 // Instancia global del logger SQL

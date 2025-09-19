@@ -17,7 +17,8 @@
 import { startServer, setDestinationAPI, setPayloadTransformer, setEndpointTransformer } from "./lib/server.ts";
 import { configureLogger } from "./lib/logger.ts";
 import { configureSqlLogger } from "./lib/sql-logger.ts";
-import type { ApiResponse, SingleObjectResponse, ArrayResponse } from "./lib/types.ts";
+import { PERFORMANCE_CONFIG } from "./lib/config.ts";
+import type { SingleObjectResponse, ArrayResponse, ProcedureCallResponse } from "./lib/types.ts";
 
 // 📝 Configurar sistema de logging
 configureLogger({
@@ -68,14 +69,18 @@ setDestinationAPI(
 
 // 🎯 Configurar transformadores por endpoint específico
 // Cada endpoint puede tener su propio formato de payload
+// 
+// ⚠️  IMPORTANTE: Los transformadores generan SOLO INSERT statements
+//    Las tablas deben existir previamente en la base de datos
+//    Para evitar errores ORA-00942, asegúrate de que las tablas estén creadas
 
-// Ejemplo 1: Para endpoints que terminan en "/exec" - formato simple
+// Ejemplo 1: Para endpoints que terminan en "/exec" - formato simple INSERT
 setEndpointTransformer(
   "*/exec",  // Patrón: cualquier URL que termine en /exec
-  (sqlData, originalData) => {
+  (sqlData, _originalData) => {
     if (!sqlData.success) return { error: "SQL generation failed" };
     
-    // 🎯 Formato específico solicitado: { "query": "INSERT..." } SIN punto y coma final
+    // 🎯 Formato específico solicitado: { "query": "INSERT..." } SIN CREATE TABLE
     if (sqlData.inputType === "object") {
       const objectData = sqlData as SingleObjectResponse;
       const cleanQuery = objectData.insert.replace(/;$/, ''); // Eliminar ; al final para Oracle
@@ -84,7 +89,7 @@ setEndpointTransformer(
       };
     }
     
-    // Para arrays, enviar TODOS LOS INSERTS usando PL/SQL Block
+    // Para arrays, enviar TODOS LOS INSERTS usando PL/SQL Block SIN CREATE TABLES
     if (sqlData.inputType === "array") {
       const arrayData = sqlData as ArrayResponse;
       const allInserts = arrayData.tables.flatMap(t => t.inserts);
@@ -93,7 +98,7 @@ setEndpointTransformer(
         return { error: "No INSERT statements generated" };
       }
       
-      // 🎯 ESTRATEGIA PARA TODOS LOS INSERTS: PL/SQL Block
+      // 🎯 ESTRATEGIA PARA TODOS LOS INSERTS: PL/SQL Block simple
       if (allInserts.length === 1) {
         // Si solo hay uno, enviar simple sin punto y coma
         const cleanQuery = allInserts[0].replace(/;$/, '');
@@ -219,10 +224,10 @@ END;`;
 // 🎯 Transformer específico para tu endpoint de ejecución
 setEndpointTransformer(
   "*10.6.46.114:8081*",  // Patrón específico para tu servidor
-  (sqlData, originalData) => {
+  (sqlData, _originalData) => {
     if (!sqlData.success) return { error: "SQL generation failed" };
     
-    // Formato exacto solicitado: { "query": "INSERT..." }
+    // Formato exacto solicitado: { "query": "INSERT..." } SIN CREATE TABLE
     if (sqlData.inputType === "object") {
       const objectData = sqlData as SingleObjectResponse;
       const cleanQuery = objectData.insert.replace(/;$/, ''); // Eliminar ; al final para Oracle
@@ -231,7 +236,7 @@ setEndpointTransformer(
       };
     }
     
-    // Para arrays, enviar TODOS LOS INSERTS usando PL/SQL Block
+    // Para arrays, enviar TODOS LOS INSERTS usando PL/SQL Block SIN CREATE TABLES
     if (sqlData.inputType === "array") {
       const arrayData = sqlData as ArrayResponse;
       const allInserts = arrayData.tables.flatMap(t => t.inserts);
@@ -240,7 +245,7 @@ setEndpointTransformer(
         return { error: "No INSERT statements generated" };
       }
       
-      // 🎯 ESTRATEGIA PARA TODOS LOS INSERTS: PL/SQL Block o simple
+      // 🎯 ESTRATEGIA PARA TODOS LOS INSERTS: PL/SQL Block simple
       if (allInserts.length === 1) {
         // Si solo hay uno, enviar simple sin punto y coma
         const cleanQuery = allInserts[0].replace(/;$/, '');
@@ -271,6 +276,74 @@ END;`;
   }
 );
 
+// 🔧 Transformer específico para procedimientos almacenados
+setEndpointTransformer(
+  "*/procedimiento",  // Patrón: cualquier URL que termine en /procedimiento
+  (sqlData, originalData) => {
+    if (!sqlData.success) return { error: "Procedure call generation failed" };
+    
+    // 🔧 Formato específico para procedimientos: { "name": "...", "isFunction": true, "params": [...] }
+    if (sqlData.inputType === "procedure") {
+      const procedureData = sqlData as ProcedureCallResponse;
+      const originalProcData = originalData as { procedureName: string; parameters?: Record<string, unknown> };
+      
+      // Convertir parámetros al formato esperado
+      const params = [];
+      if (originalProcData.parameters) {
+        for (const [paramName, paramValue] of Object.entries(originalProcData.parameters)) {
+          params.push({
+            name: paramName,
+            value: paramValue
+          });
+        }
+      }
+      
+      return {
+        name: procedureData.procedureName,
+        isFunction: true,
+        params: params
+      };
+    }
+    
+    // Para múltiples procedimientos, enviar solo el primero (el endpoint destino parece manejar uno a la vez)
+    if (sqlData.inputType === "multiple-procedures") {
+      const originalArray = originalData as Array<{ procedureName: string; parameters?: Record<string, unknown> }>;
+      
+      if (originalArray && originalArray.length > 0) {
+        const firstProcedure = originalArray[0];
+        
+        // Convertir parámetros del primer procedimiento
+        const params = [];
+        if (firstProcedure.parameters) {
+          for (const [paramName, paramValue] of Object.entries(firstProcedure.parameters)) {
+            params.push({
+              name: paramName,
+              value: paramValue
+            });
+          }
+        }
+        
+        return {
+          name: firstProcedure.procedureName,
+          isFunction: true,
+          params: params
+        };
+      }
+    }
+    
+    return { error: "Unsupported procedure data type" };
+  },
+  {
+    method: "POST",
+    headers: {
+      "Authorization": "Bearer demo",
+      "Content-Type": "application/json",
+      "X-Source": "deno-oracle-proxy",
+      "X-Format": "procedure-call"
+    }
+  }
+);
+
 // Ejemplo 2: Para APIs de testing local - formato extendido
 setEndpointTransformer(
   "localhost:*",  // Patrón: cualquier localhost con cualquier puerto
@@ -284,8 +357,8 @@ setEndpointTransformer(
         generatedSQL: sqlData,
         debug: {
           inputType: Array.isArray(originalData) ? "array" : "object",
-          sqlCount: sqlData.inputType === "object" ? 1 : 
-                    sqlData.inputType === "array" ? sqlData.tables?.reduce((sum, t) => sum + t.recordCount, 0) : 0
+          sqlCount: sqlData.success && sqlData.inputType === "object" ? 1 : 
+                    sqlData.success && sqlData.inputType === "array" ? sqlData.tables?.reduce((sum: number, t: { recordCount: number }) => sum + t.recordCount, 0) : 0
         }
       }
     };
@@ -302,13 +375,13 @@ setEndpointTransformer(
 // Ejemplo 3: Para APIs específicas por dominio
 setEndpointTransformer(
   "*api.empresa.com*",  // Patrón: cualquier subdominio de api.empresa.com
-  (sqlData, originalData) => {
+  (sqlData, _originalData) => {
     return {
       companyFormat: true,
       data: {
-        sql: sqlData.inputType === "object" ? 
+        sql: sqlData.success && sqlData.inputType === "object" ? 
              [sqlData.insert] : 
-             sqlData.tables?.flatMap(t => t.inserts) || [],
+             sqlData.success && sqlData.inputType === "array" ? sqlData.tables?.flatMap((t: { inserts: string[] }) => t.inserts) || [] : [],
         metadata: {
           generated: new Date().toISOString(),
           source: "oracle-proxy",
@@ -328,10 +401,10 @@ setEndpointTransformer(
 // 📦 Configurar transformación global (opcional)
 // Formato simple para cuando no hay transformer específico
 
-setPayloadTransformer((sqlData, originalData) => {
+setPayloadTransformer((sqlData, _originalData) => {
   if (!sqlData.success) return { error: "SQL generation failed" };
   
-  // 🎯 Formato simple por defecto: { "query": "INSERT..." }
+  // 🎯 Formato simple por defecto: { "query": "INSERT..." } SIN CREATE TABLE
   if (sqlData.inputType === "object") {
     const objectData = sqlData as SingleObjectResponse;
     return {
@@ -378,5 +451,13 @@ if (import.meta.main) {
   console.log("🔒 CORS habilitado por defecto para todos los orígenes");
   console.log("🌐 El proxy puede ser usado desde cualquier navegador web");
   console.log("📝 Los logs se guardarán en ./logs/proxy.log");
+  
+  // Mostrar configuración de performance
+  console.log("⚡ Configuración de Performance:");
+  console.log(`   • Timeout por defecto: ${PERFORMANCE_CONFIG.DEFAULT.timeout}ms`);
+  console.log(`   • Timeout para procedimientos: ${PERFORMANCE_CONFIG.SLOW.timeout}ms`);
+  console.log(`   • Reintentos: ${PERFORMANCE_CONFIG.DEFAULT.retries}`);
+  console.log("   • Optimizaciones automáticas activadas");
+  
   startServer(8003);
 }

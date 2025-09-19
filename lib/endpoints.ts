@@ -2,10 +2,11 @@
  * 🔌 Endpoints del proxy Oracle SQL - Versión simplificada
  */
 
-import { jsonToOracleInsert, generateCreateTable, processJsonArray } from "./oracle.ts";
-import type { ApiResponse, ArrayResponse, SingleObjectResponse, ErrorResponse } from "./types.ts";
+import { jsonToOracleInsert, processJsonArray, generateProcedureCall, generateMultipleProcedureCalls } from "./oracle.ts";
+import type { ApiResponse, ArrayResponse, SingleObjectResponse, ErrorResponse, ProcedureCallResponse, MultipleProceduresResponse } from "./types.ts";
 import { logger } from "./logger.ts";
 import { sqlLogger } from "./sql-logger.ts";
+import { withTimeout, withRetry, measureTime, getConfigForEndpoint } from "./config.ts";
 
 /**
  * 🏠 Endpoint principal - Conversión JSON a Oracle SQL
@@ -78,7 +79,6 @@ export async function convertToOracleHandler(req: Request): Promise<Response> {
         inputType: "object",
         tableName: tableName,
         insert: insert,
-        createTable: generateCreateTable(inputData, tableName),
         generatedAt: new Date().toISOString(),
         sessionId
       } as SingleObjectResponse;
@@ -116,7 +116,7 @@ export function healthHandler(): Response {
   const health = {
     status: "OK",
     timestamp: new Date().toISOString(),
-    uptime: process?.uptime?.() || "unknown",
+    uptime: "available", // Deno doesn't have process.uptime()
     service: "Deno Oracle Proxy",
     version: "1.0.0"
   };
@@ -211,6 +211,79 @@ export function examplesHandler(): Response {
         }
       ],
       expectedResult: "Múltiples INSERTs agrupados por tabla"
+    }
+  };
+
+  return Response.json(examples);
+}
+
+/**
+ * 🔧 GET /api/oracle/procedure - Ejemplos de procedimientos
+ */
+export function procedureExamplesHandler(): Response {
+  const examples = {
+    description: "Ejemplos para ejecutar procedimientos almacenados Oracle",
+    singleProcedure: {
+      description: "Procedimiento individual con parámetros",
+      example: {
+        procedureName: "ganancias.ActualizarEmpleado",
+        parameters: {
+          p_id: 9999,
+          p_nombre: "MARIA CONSTANZA",
+          p_apellido: "CAINZO",
+          p_activo: true,
+          p_fecha: "19-09-2025"
+        }
+      },
+      expectedPLSQL: "BEGIN\n  GANANCIAS.ACTUALIZAREMPLEADO(p_id => 9999, p_nombre => 'MARIA CONSTANZA', p_apellido => 'CAINZO', p_activo => 'Y', p_fecha => TO_DATE('19-09-2025', 'DD-MM-YYYY'));\nEND;"
+    },
+    packageProcedure: {
+      description: "Procedimiento en paquete (esquema.paquete.procedimiento)",
+      example: {
+        procedureName: "workflow.controles.CARGARESUMENLIQ",
+        parameters: {
+          vPERIODO: "01-09-2025",
+          vIDTIPOLIQ: 1,
+          vIDGRUPO: 0,
+          vGRUPOREP: 9
+        }
+      },
+      expectedPLSQL: "BEGIN\n  WORKFLOW.CONTROLES.CARGARESUMENLIQ(vPERIODO => TO_DATE('01-09-2025', 'DD-MM-YYYY'), vIDTIPOLIQ => 1, vIDGRUPO => 0, vGRUPOREP => 9);\nEND;"
+    },
+    multipleProcedures: {
+      description: "Múltiples procedimientos en una transacción",
+      example: [
+        {
+          procedureName: "ganancias.InsertarEmpleado",
+          parameters: {
+            p_nombre: "Juan Perez",
+            p_email: "juan@empresa.com"
+          }
+        },
+        {
+          procedureName: "auditoria.RegistrarAcceso",
+          parameters: {
+            p_usuario: "admin",
+            p_accion: "INSERT"
+          }
+        }
+      ],
+      expectedPLSQL: "BEGIN\n  GANANCIAS.INSERTAREMPLEADO(p_nombre => 'Juan Perez', p_email => 'juan@empresa.com');\n  AUDITORIA.REGISTRARACCESO(p_usuario => 'admin', p_accion => 'INSERT');\n  COMMIT;\nEND;"
+    },
+    parameterTypes: {
+      description: "Tipos de parámetros soportados",
+      examples: {
+        string: "p_nombre => 'Juan'",
+        number: "p_id => 123",
+        boolean: "p_activo => 'Y' (true) o 'N' (false)",
+        date: "p_fecha => TO_DATE('25-08-2025', 'DD-MM-YYYY')",
+        null: "p_opcional => NULL"
+      }
+    },
+    usage: {
+      endpoint: "POST /api/oracle/procedure",
+      contentType: "application/json",
+      note: "Los procedimientos se envían automáticamente a URLs que terminen en '/procedimiento'"
     }
   };
 
@@ -337,9 +410,30 @@ export async function setTransformerHandler(req: Request): Promise<Response> {
     }
 
     try {
+      // Validación básica de seguridad para el código del transformer
+      if (config.transformerCode.includes('require') || 
+          config.transformerCode.includes('import') ||
+          config.transformerCode.includes('process') ||
+          config.transformerCode.includes('__dirname') ||
+          config.transformerCode.includes('eval') ||
+          config.transformerCode.includes('Function(')) {
+        return Response.json({
+          success: false,
+          error: "Código de transformer contiene funciones no permitidas por seguridad"
+        }, { status: 400 });
+      }
+
       const transformerFn = eval(`(${config.transformerCode})`);
       
-      const { setPayloadTransformer } = await import("../server.ts");
+      // Verificar que sea una función
+      if (typeof transformerFn !== 'function') {
+        return Response.json({
+          success: false,
+          error: "El código debe exportar una función"
+        }, { status: 400 });
+      }
+      
+      const { setPayloadTransformer } = await import("./server.ts");
       setPayloadTransformer(transformerFn);
       
       return Response.json({
@@ -387,9 +481,30 @@ export async function setEndpointTransformerHandler(req: Request): Promise<Respo
     }
 
     try {
+      // Validación básica de seguridad para el código del transformer
+      if (config.transformerCode.includes('require') || 
+          config.transformerCode.includes('import') ||
+          config.transformerCode.includes('process') ||
+          config.transformerCode.includes('__dirname') ||
+          config.transformerCode.includes('eval') ||
+          config.transformerCode.includes('Function(')) {
+        return Response.json({
+          success: false,
+          error: "Código de transformer contiene funciones no permitidas por seguridad"
+        }, { status: 400 });
+      }
+
       const transformerFn = eval(`(${config.transformerCode})`);
       
-      const { setEndpointTransformer } = await import("../server.ts");
+      // Verificar que sea una función
+      if (typeof transformerFn !== 'function') {
+        return Response.json({
+          success: false,
+          error: "El código debe exportar una función"
+        }, { status: 400 });
+      }
+      
+      const { setEndpointTransformer } = await import("./server.ts");
       setEndpointTransformer(
         config.endpointPattern,
         transformerFn,
@@ -431,7 +546,7 @@ export async function setEndpointTransformerHandler(req: Request): Promise<Respo
  */
 export async function listTransformersHandler(): Promise<Response> {
   try {
-    const { listEndpointTransformers } = await import("../server.ts");
+    const { listEndpointTransformers } = await import("./server.ts");
     const transformers = listEndpointTransformers();
     
     return Response.json({
@@ -470,13 +585,13 @@ export async function setBearerTokenHandler(req: Request): Promise<Response> {
     }
 
     // Importar funciones del servidor
-    const { setDestinationAPI, setEndpointTransformer } = await import("../server.ts");
+    const { setDestinationAPI, setEndpointTransformer } = await import("./server.ts");
     
     if (config.endpointPattern) {
       // Configurar token para endpoint específico
       setEndpointTransformer(
         config.endpointPattern,
-        (sqlData, originalData) => {
+        (sqlData: ApiResponse, _originalData: unknown) => {
           if (!sqlData.success) return { error: "SQL generation failed" };
           
           if (sqlData.inputType === "object") {
@@ -484,7 +599,7 @@ export async function setBearerTokenHandler(req: Request): Promise<Response> {
           }
           
           if (sqlData.inputType === "array") {
-            const allInserts = sqlData.tables.flatMap(t => t.inserts);
+            const allInserts = sqlData.tables.flatMap((t: { inserts: string[] }) => t.inserts);
             return { query: allInserts.length > 0 ? allInserts[0] : "" };
           }
           
@@ -650,4 +765,138 @@ export async function getForwardStatsHandler(): Promise<Response> {
       error: error instanceof Error ? error.message : "Error calculando estadísticas de reenvío"
     }, { status: 500 });
   }
+}
+
+/**
+ * 🔧 Endpoint para ejecutar procedimientos almacenados Oracle - OPTIMIZADO
+ * POST /api/oracle/procedure
+ */
+export async function procedureHandler(req: Request): Promise<Response> {
+  const config = getConfigForEndpoint(req.url);
+  
+  try {
+    // Usar timeout para la lectura del request
+    const inputData = await withTimeout(
+      req.json(),
+      3000, // 3 segundos para leer el JSON
+      "Timeout leyendo los datos de entrada"
+    );
+    
+    console.log("🔧 Datos recibidos para procedimiento:", inputData);
+
+    // Medir tiempo de procesamiento
+    const { result, duration } = await measureTime(async () => {
+      return await withRetry(() => {
+        return Promise.resolve(processProcedureData(inputData, req));
+      }, config.retries);
+    });
+
+    // Agregar información de performance
+    if ('generatedAt' in result) {
+      (result as ProcedureCallResponse).executionTime = duration;
+    }
+    
+    if (duration > 5000) {
+      console.log(`⚠️ Procedimiento lento detectado: ${duration}ms`);
+    }
+
+    return Response.json(result);
+
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : "Error procesando procedimiento";
+    console.error("❌ Error en procedureHandler:", errorMessage);
+
+    const errorResponse: ErrorResponse = {
+      success: false,
+      error: errorMessage,
+      timestamp: new Date().toISOString()
+    };
+
+    return Response.json(errorResponse, { status: 400 });
+  }
+}
+
+// Función auxiliar para procesar los datos del procedimiento
+async function processProcedureData(inputData: unknown, req: Request): Promise<ApiResponse> {
+  const startTime = Date.now();
+  let sessionId: string | undefined;
+  const _dataSize = JSON.stringify(inputData).length;
+
+  let result: ApiResponse;
+
+  // Validar estructura de entrada
+  if (Array.isArray(inputData)) {
+    // Múltiples procedimientos
+    console.log("🔧 Procesando múltiples procedimientos");
+    
+    // Validar que cada elemento tenga procedureName
+    for (const proc of inputData) {
+      if (!proc.procedureName || typeof proc.procedureName !== 'string') {
+        throw new Error("Cada procedimiento debe tener un 'procedureName' válido");
+      }
+    }
+
+    const procedureCall = generateMultipleProcedureCalls(inputData);
+    
+    // Log para SQL
+    const processingTime = Date.now() - startTime;
+    sessionId = await sqlLogger.logProcedureCall(req, inputData, procedureCall, {
+      processingTime,
+      dataSize: _dataSize
+    });
+
+    result = {
+      success: true,
+      inputType: "multiple-procedures",
+      procedures: inputData.map((proc: { procedureName: string; parameters?: Record<string, unknown> }) => ({
+        procedureName: proc.procedureName,
+        parameterCount: proc.parameters ? Object.keys(proc.parameters).length : 0
+      })),
+      call: procedureCall,
+      summary: {
+        totalProcedures: inputData.length,
+        generatedAt: new Date().toISOString()
+      },
+      sessionId
+    } as MultipleProceduresResponse;
+
+    console.log("🔧 Bloque PL/SQL generado para múltiples procedimientos:");
+    console.log(procedureCall);
+    
+  } else if (inputData && typeof inputData === 'object') {
+    // Procedimiento individual
+    console.log("🔧 Procesando procedimiento individual");
+    
+    const data = inputData as Record<string, unknown>;
+    const { procedureName, parameters = {} } = data;
+    
+    if (!procedureName || typeof procedureName !== 'string') {
+      throw new Error("Se requiere un 'procedureName' válido");
+    }
+
+    const procedureCall = generateProcedureCall(procedureName, parameters as Record<string, unknown>);
+    
+    // Log para SQL
+    const processingTime = Date.now() - startTime;
+    sessionId = await sqlLogger.logProcedureCall(req, procedureName, procedureCall, {
+      processingTime,
+      dataSize: _dataSize
+    });
+
+    result = {
+      success: true,
+      inputType: "procedure",
+      procedureName: procedureName,
+      call: procedureCall,
+      generatedAt: new Date().toISOString(),
+      sessionId
+    } as ProcedureCallResponse;
+
+    console.log("🔧 Llamada a procedimiento generada:", procedureCall);
+    
+  } else {
+    throw new Error("Formato de entrada inválido. Se espera un objeto con 'procedureName' y 'parameters' opcional, o un array de procedimientos");
+  }
+
+  return result;
 }
