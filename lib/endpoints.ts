@@ -2,7 +2,7 @@
  * 🔌 Endpoints del proxy Oracle SQL - Versión simplificada
  */
 
-import { jsonToOracleInsert, generateCreateTable, processJsonArray } from "./oracle.ts";
+import { jsonToOracleInsert, jsonToOracleInsertObject, generateCreateTable, processJsonArray } from "./oracle.ts";
 import type { ApiResponse, ArrayResponse, SingleObjectResponse, ErrorResponse } from "./types.ts";
 import { logger } from "./logger.ts";
 import { sqlLogger } from "./sql-logger.ts";
@@ -55,7 +55,7 @@ async function genericOracleHandler(req: Request, endpointName: string): Promise
       } as ArrayResponse;
     } else {
       console.log(`✅ Procesando objeto individual en ${endpointName}`);
-      const table = jsonToOracleInsert(inputData);
+      const table = jsonToOracleInsertObject(inputData);
       const createTableSQL = generateCreateTable(inputData, table.tableName);
 
       // Registrar en el log SQL
@@ -237,7 +237,7 @@ export function healthHandler(): Response {
   const health = {
     status: "OK",
     timestamp: new Date().toISOString(),
-    uptime: process?.uptime?.() || "unknown",
+    uptime: `${Math.floor(performance.now() / 1000)}s`,
     service: "Deno Oracle Proxy",
     version: "1.0.0"
   };
@@ -597,7 +597,7 @@ export async function setBearerTokenHandler(req: Request): Promise<Response> {
       // Configurar token para endpoint específico
       setEndpointTransformer(
         config.endpointPattern,
-        (sqlData, originalData) => {
+        (sqlData: any, originalData: any) => {
           if (!sqlData.success) return { error: "SQL generation failed" };
           
           if (sqlData.inputType === "object") {
@@ -605,7 +605,7 @@ export async function setBearerTokenHandler(req: Request): Promise<Response> {
           }
           
           if (sqlData.inputType === "array") {
-            const allInserts = sqlData.tables.flatMap(t => t.inserts);
+            const allInserts = sqlData.tables.flatMap((t: any) => t.inserts);
             return { query: allInserts.length > 0 ? allInserts[0] : "" };
           }
           

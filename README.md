@@ -26,28 +26,45 @@ Servidor proxy construido con Deno que convierte JSON a statements INSERT de Ora
 
 ## 🚀 Inicio rápido
 
-### 1. Configurar variables de entorno (opcional)
-```bash
-# Crear .env (opcional - tiene valores por defecto)
-cp .env.example .env
-```
+### Opción 1: Ejecutable compilado (Recomendado)
 
-### 2. Iniciar el servidor
-```bash
-# Desarrollo
-deno run --allow-all main.ts
+1. **Descargar el ejecutable** `deno-oracle-proxy.exe` 
+2. **Ejecutar directamente:**
+   ```bash
+   # Windows
+   .\deno-oracle-proxy.exe
+   
+   # El servidor iniciará inmediatamente en http://localhost:8003
+   ```
 
-# O usando las tareas definidas
-deno task start
+### Opción 2: Desarrollo con Deno
 
-# Modo desarrollo con watch
-deno task dev
-```
+1. **Configurar variables de entorno** (opcional)
+   ```bash
+   # Crear .env (opcional - tiene valores por defecto)
+   cp .env.example .env
+   ```
 
-### 3. El servidor estará disponible en:
-```
-http://localhost:8003
-```
+2. **Iniciar el servidor**
+   ```bash
+   # Desarrollo
+   deno run --allow-all main.ts
+
+   # O usando las tareas definidas
+   deno task start
+
+   # Modo desarrollo con watch
+   deno task dev
+   ```
+
+3. **El servidor estará disponible en:**
+   ```
+   http://localhost:8003
+   ```
+
+### 🛠️ Compilar tu propio ejecutable
+
+Ver [BUILD.md](BUILD.md) para instrucciones detalladas de compilación.
 
 ## 📖 Guía de uso
 

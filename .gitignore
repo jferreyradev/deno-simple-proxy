@@ -13,3 +13,6 @@ logs/
 # Otros
 .DS_Store
 Thumbs.db
+
+# Dist
+dist/

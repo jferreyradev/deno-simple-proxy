@@ -128,6 +128,20 @@ export function jsonToOracleInsert(data: Record<string, unknown>, tableName: str
 }
 
 /**
+ * Convierte un objeto JSON a INSERT Oracle y retorna un objeto con metadata
+ * @param data - Objeto JSON a convertir
+ * @param tableName - Nombre de la tabla
+ * @returns Objeto con tableName, insert y metadata
+ */
+export function jsonToOracleInsertObject(data: Record<string, unknown>, tableName: string = "DATA_TABLE"): { tableName: string; insert: string } {
+  const insertStatement = jsonToOracleInsert(data, tableName);
+  return {
+    tableName,
+    insert: insertStatement
+  };
+}
+
+/**
  * Genera statement CREATE TABLE basado en los tipos de datos JSON
  * @param data - Objeto de ejemplo para inferir tipos
  * @param tableName - Nombre de la tabla

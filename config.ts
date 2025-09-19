@@ -52,20 +52,20 @@ const developmentConfig: ProxyConfig = {
   corsEnabled: true,
   
   logger: {
-    logDir: "./logs",
-    fileName: "proxy.log",
-    level: "INFO",
-    maxFileSize: 10 * 1024 * 1024, // 10MB
-    maxBackupFiles: 5,
+    logDir: Deno.env.get("LOG_DIR") || "./logs",
+    fileName: Deno.env.get("LOG_FILE") || "proxy.log",
+    level: (Deno.env.get("LOG_LEVEL") || "INFO") as "DEBUG" | "INFO" | "WARN" | "ERROR",
+    maxFileSize: parseInt(Deno.env.get("LOG_MAX_SIZE") || "10485760"), // 10MB
+    maxBackupFiles: parseInt(Deno.env.get("LOG_MAX_BACKUPS") || "5"),
     includeTimestamp: true,
-    consoleOutput: true
+    consoleOutput: Deno.env.get("LOG_CONSOLE") === "true"
   },
 
   sqlLogger: {
-    logDir: "./logs",
-    fileName: "sql-inserts.log",
-    maxFileSize: 5 * 1024 * 1024, // 5MB
-    maxBackupFiles: 3
+    logDir: Deno.env.get("SQL_LOG_DIR") || "./logs",
+    fileName: Deno.env.get("SQL_LOG_FILE") || "sql-inserts.log",
+    maxFileSize: parseInt(Deno.env.get("SQL_LOG_MAX_SIZE") || "5242880"), // 5MB
+    maxBackupFiles: parseInt(Deno.env.get("SQL_LOG_MAX_BACKUPS") || "3")
   },
 
   defaultBearerToken: Deno.env.get("DEFAULT_BEARER_TOKEN") || "demo",

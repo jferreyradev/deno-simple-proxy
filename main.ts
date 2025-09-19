@@ -14,6 +14,25 @@
  * 5. Logs se guardan automáticamente en la carpeta ./logs/
  */
 
+// 🔧 Cargar variables de entorno desde .env si existe
+try {
+  const envContent = await Deno.readTextFile(".env");
+  envContent.split("\n").forEach(line => {
+    line = line.trim();
+    if (line && !line.startsWith("#")) {
+      const [key, ...valueParts] = line.split("=");
+      if (key && valueParts.length > 0) {
+        const value = valueParts.join("=");
+        Deno.env.set(key, value);
+      }
+    }
+  });
+  console.log("📋 Variables de entorno cargadas desde .env");
+} catch {
+  console.log("📋 No se encontró archivo .env - usando configuración por defecto");
+  console.log("💡 Tip: Copia .env.example como .env para personalizar la configuración");
+}
+
 import { startServer, setDestinationAPI, setPayloadTransformer, setEndpointTransformer, setDestinationRoutes } from "./lib/server.ts";
 import { configureLogger } from "./lib/logger.ts";
 import { configureSqlLogger } from "./lib/sql-logger.ts";
@@ -21,26 +40,16 @@ import type { ApiResponse, SingleObjectResponse, ArrayResponse } from "./lib/typ
 import { getConfigForEnvironment } from "./config.ts";
 
 // 🔧 Cargar configuración basada en ambiente
-const environment = (Deno.env.get("NODE_ENV") || "development") as "development" | "production" | "testing";
+const environment = (Deno.env.get("DENO_ENV") || "development") as "development" | "production" | "test";
 const config = getConfigForEnvironment(environment);
 
 console.log(`🌍 Iniciando en modo: ${environment}`);
 
-// � Configurar sistema de logging usando configuración
+// 🔧 Configurar sistema de logging usando configuración
 configureLogger(config.logger);
 
 // 📊 Configurar logging específico para SQL INSERTs
 configureSqlLogger(config.sqlLogger);
-
-// 🎯 Configurar API destino desde configuración (retrocompatibilidad)
-if (config.destinationApi) {
-  setDestinationAPI(
-    config.destinationApi.url,
-    config.destinationApi.method,
-    config.destinationApi.headers
-  );
-  console.log(`🎯 API destino configurada: ${config.destinationApi.method} ${config.destinationApi.url}`);
-}
 
 // 🎯 Configurar múltiples destinos por endpoint
 if (config.destinationRoutes && config.destinationRoutes.length > 0) {
@@ -48,74 +57,67 @@ if (config.destinationRoutes && config.destinationRoutes.length > 0) {
   console.log(`🎯 Configurados ${config.destinationRoutes.length} destinos específicos por endpoint`);
 }
 
-// 🎯 Configurar transformadores de endpoints desde configuración
-config.endpointTransformers.forEach(transformerConfig => {
-  setEndpointTransformer(
-    transformerConfig.pattern,
-    (sqlData, originalData) => {
-      if (!sqlData.success) return { error: "SQL generation failed" };
-      
-      // 🎯 Formato estándar para todos los endpoints: { "query": "SQL..." }
-      if (sqlData.inputType === "object") {
-        const objectData = sqlData as SingleObjectResponse;
-        const cleanQuery = objectData.insert.replace(/;$/, '');
-        return { query: cleanQuery };
+// 🎯 Configurar transformers por endpoint específico
+if (config.endpointTransformers && config.endpointTransformers.length > 0) {
+  for (const transformer of config.endpointTransformers) {
+    setEndpointTransformer(
+      transformer.pattern,
+      (sqlData: any, originalData: any) => ({ ...sqlData }),
+      { 
+        method: transformer.method,
+        headers: transformer.headers 
       }
-      
-      // Para arrays, generar bloque PL/SQL con todos los INSERTs
-      if (sqlData.inputType === "array") {
-        const arrayData = sqlData as ArrayResponse;
-        const allInserts = arrayData.tables.flatMap(t => t.inserts);
-        
-        if (allInserts.length === 0) {
-          return { error: "No INSERT statements generated" };
-        }
-        
-        if (allInserts.length === 1) {
-          const cleanQuery = allInserts[0].replace(/;$/, '');
-          return { query: cleanQuery };
-        } else {
-          const plsqlBlock = `BEGIN
-${allInserts.map(insert => `  ${insert.replace(/;$/, '')};`).join('\n')}
-  COMMIT;
-END;`;
-          return { query: plsqlBlock };
-        }
-      }
-      
-      return { error: "Unsupported data type" };
-    },
-    {
-      method: transformerConfig.method,
-      headers: transformerConfig.headers
+    );
+    console.log(`🎯 Transformer configurado para endpoint: ${transformer.pattern}`);
+    if (transformer.method) {
+      console.log(`   Método: ${transformer.method}`);
     }
-  );
-});
-
-// 📦 Configurar transformación global por defecto
-setPayloadTransformer((sqlData, originalData) => {
-  if (!sqlData.success) return { error: "SQL generation failed" };
-  
-  if (sqlData.inputType === "object") {
-    const objectData = sqlData as SingleObjectResponse;
-    return { query: objectData.insert };
+    console.log(`   Headers: ${JSON.stringify(transformer.headers, null, 2)}`);
   }
-  
-  if (sqlData.inputType === "array") {
-    const arrayData = sqlData as ArrayResponse;
-    const allInserts = arrayData.tables.flatMap(table => table.inserts);
-    return {
-      query: allInserts.length > 0 ? allInserts[0] : "-- No SQL generated"
-    };
-  }
-  
-  return sqlData;
-});
-
-// 🚀 Iniciar el servidor con configuración
-if (import.meta.main) {
-  console.log(`🔒 CORS ${config.corsEnabled ? 'habilitado' : 'deshabilitado'}`);
-  console.log("🌐 El proxy puede ser usado desde cualquier navegador web");
-  console.log(`📝 Los logs se guardarán en ${config.logger.logDir}/${config.logger.fileName}`);
-  startServer(config.port);
 }
+
+// 🔄 Configurar transformer personalizado para datos
+setPayloadTransformer((data) => {
+  // Transformer que toma los datos originales y los mantiene
+  return { originalData: data };
+});
+console.log("🔄 Transformer de payload personalizado configurado");
+
+// 🔒 Configurar CORS
+if (config.corsEnabled) {
+  console.log("🔒 CORS habilitado");
+  console.log("🌐 El proxy puede ser usado desde cualquier navegador web");
+}
+
+// 📝 Información de logging
+console.log(`📝 Los logs se guardarán en ${config.logger.logDir}/${config.logger.fileName}`);
+
+/**
+ * 🎯 Ejemplo de configuración dinámica de una nueva API
+ * Esto se ejecuta solo al inicializar el servidor
+ */
+async function configureDynamicEndpoints() {
+  // Configuración dinámica ejemplar
+  // setDestinationAPI("https://api.ejemplo.com", "POST", { "Authorization": "Bearer token" });
+}
+
+// ⚡ Ejecutar configuración dinámica
+await configureDynamicEndpoints();
+
+/**
+ * 🚀 Inicializar servidor si este archivo se ejecuta directamente
+ */
+if (import.meta.main) {
+  try {
+    await startServer(config.port);
+  } catch (error) {
+    console.error("❌ Error iniciando servidor:", error);
+    Deno.exit(1);
+  }
+}
+
+/**
+ * 📤 Exportar para uso como módulo
+ */
+export { startServer, setDestinationAPI, setPayloadTransformer, setEndpointTransformer };
+export type { ApiResponse, SingleObjectResponse, ArrayResponse };

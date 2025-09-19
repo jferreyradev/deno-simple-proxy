@@ -214,7 +214,7 @@ export class SqlLogger {
     request: Request,
     tableName: string,
     sqlStatement: string,
-    metadata?: { processingTime?: number; dataSize?: number }
+    metadata?: { processingTime?: number; dataSize?: number; endpoint?: string }
   ): Promise<string> {
     const sessionId = this.generateSessionId();
     
@@ -246,7 +246,7 @@ export class SqlLogger {
   async logArrayInserts(
     request: Request,
     sqlResults: { tableName: string; inserts: string[] }[],
-    metadata?: { processingTime?: number; dataSize?: number }
+    metadata?: { processingTime?: number; dataSize?: number; endpoint?: string }
   ): Promise<string> {
     const sessionId = this.generateSessionId();
     
