@@ -8,23 +8,23 @@ import { logger } from "./logger.ts";
 import { sqlLogger } from "./sql-logger.ts";
 
 /**
- * 🏠 Endpoint principal - Conversión JSON a Oracle SQL
- * POST /api/oracle/convert
+ * 🔄 Handler genérico para endpoints que procesan JSON a SQL Oracle
+ * Usado por múltiples endpoints: /api/oracle/convert, /api/reports, /api/analytics, etc.
  */
-export async function convertToOracleHandler(req: Request): Promise<Response> {
+async function genericOracleHandler(req: Request, endpointName: string): Promise<Response> {
   const startTime = Date.now();
   let sessionId: string | undefined;
 
   try {
     const inputData = await req.json();
     const dataSize = JSON.stringify(inputData).length;
-    console.log("✅ JSON recibido:", inputData);
+    console.log(`✅ JSON recibido en ${endpointName}:`, inputData);
 
     let result: ApiResponse;
 
     // Determinar si es array o objeto individual
     if (Array.isArray(inputData)) {
-      console.log("✅ Procesando array de objetos con tablas específicas");
+      console.log(`✅ Procesando array de objetos en ${endpointName}`);
       const tables = processJsonArray(inputData);
       
       // Preparar datos para el logger SQL
@@ -37,7 +37,8 @@ export async function convertToOracleHandler(req: Request): Promise<Response> {
       const processingTime = Date.now() - startTime;
       sessionId = await sqlLogger.logArrayInserts(req, sqlResults, {
         processingTime,
-        dataSize
+        dataSize,
+        endpoint: endpointName
       });
       
       result = {
@@ -48,63 +49,183 @@ export async function convertToOracleHandler(req: Request): Promise<Response> {
           totalTables: tables.length,
           totalRecords: tables.reduce((sum, table) => sum + table.recordCount, 0),
           generatedAt: new Date().toISOString(),
-          sessionId
-        }
+          sessionId,
+          endpoint: endpointName
+        },
       } as ArrayResponse;
-
-      // Log para debug
-      console.log("📊 SQL generado para múltiples tablas:");
-      tables.forEach((table) => {
-        console.log(`\n=== TABLA: ${table.tableName} ===`);
-        table.inserts.forEach((insert, i) => {
-          console.log(`INSERT ${i + 1}: ${insert}`);
-        });
-      });
-
     } else {
-      console.log("✅ Procesando objeto individual");
-      const tableName = (inputData.tableName as string) || "DATA_TABLE";
-      const insert = jsonToOracleInsert(inputData, tableName);
-      
+      console.log(`✅ Procesando objeto individual en ${endpointName}`);
+      const table = jsonToOracleInsert(inputData);
+      const createTableSQL = generateCreateTable(inputData, table.tableName);
+
       // Registrar en el log SQL
       const processingTime = Date.now() - startTime;
-      sessionId = await sqlLogger.logSingleInsert(req, tableName, insert, {
+      sessionId = await sqlLogger.logSingleInsert(req, table.tableName, table.insert, {
         processingTime,
-        dataSize
+        dataSize,
+        endpoint: endpointName
       });
-      
+
       result = {
         success: true,
         inputType: "object",
-        tableName: tableName,
-        insert: insert,
-        createTable: generateCreateTable(inputData, tableName),
+        tableName: table.tableName,
+        insert: table.insert,
+        createTable: createTableSQL,
         generatedAt: new Date().toISOString(),
-        sessionId
+        sessionId,
+        endpoint: endpointName
       } as SingleObjectResponse;
-
-      console.log("📊 SQL generado:", insert);
     }
 
-    return Response.json(result);
+    return new Response(JSON.stringify(result, null, 2), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
 
   } catch (error) {
-    console.log("❌ Error:", error);
-    
     const errorResponse: ErrorResponse = {
       success: false,
       error: error instanceof Error ? error.message : "Error desconocido",
-      help: "Verifica que el JSON esté bien formado",
+      help: `Envía JSON válido a ${endpointName}`,
       example: {
-        single: { "tableName": "usuarios", "nombre": "Juan", "edad": 30 },
-        array: [
-          { "tableName": "empleados", "nombre": "Ana", "cargo": "Developer" },
-          { "tableName": "departamentos", "nombre": "IT", "presupuesto": 50000 }
-        ]
+        single: { "tableName": "usuarios", "id": 1, "nombre": "Juan" },
+        array: [{ "tableName": "usuarios", "id": 1, "nombre": "Juan" }]
       }
     };
 
-    return Response.json(errorResponse, { status: 400 });
+    await logger.error(`Error en ${endpointName}`, { error: error instanceof Error ? error.message : String(error) });
+
+    return new Response(JSON.stringify(errorResponse, null, 2), {
+      status: 400,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+}
+
+/**
+ * 🏠 Endpoint principal - Conversión JSON a Oracle SQL
+ * POST /api/oracle/convert
+ */
+export async function convertToOracleHandler(req: Request): Promise<Response> {
+  return genericOracleHandler(req, "/api/oracle/convert");
+}
+
+/**
+ *  Endpoint para procesamiento personalizado - Reenvía JSON tal como llega
+ * POST /api/oracle/proc
+// 🔧 Archivo temporal con procHandler corregido - después copiamos al original
+
+/**
+ *  Endpoint para procesamiento personalizado - Reenvía JSON tal como llega
+ * POST /api/oracle/proc
+ */
+export async function procHandler(req: Request): Promise<Response> {
+  try {
+    console.log("🔧 Procesando en /api/oracle/proc - SIN conversión automática a INSERT");
+    
+    const inputData = await req.json();
+    console.log("📥 Datos recibidos:", JSON.stringify(inputData, null, 2));
+    
+    // 🎯 Configuración del destino (debería venir de config.ts)
+    const destinationUrl = "http://10.6.46.114:8083/procedure";
+    const token = "Bearer demo";
+    
+    // 🔄 Transformar datos para que coincidan con la estructura esperada por la API de destino
+    const transformedData = {
+      name: inputData.procedureName || inputData.name,
+      isFunction: inputData.isFunction || false,
+      params: inputData.params || []
+    };
+    
+    // Si tenemos parámetros en formato simple, convertir a formato de array
+    if (!inputData.params && Object.keys(inputData).length > 1) {
+      const params = [];
+      for (const [key, value] of Object.entries(inputData)) {
+        if (key !== 'procedureName' && key !== 'name' && key !== 'isFunction') {
+          params.push({
+            name: key,
+            value: value
+          });
+        }
+      }
+      transformedData.params = params;
+    }
+    
+    console.log("� Datos transformados:", JSON.stringify(transformedData, null, 2));
+    
+    try {
+      console.log(`🚀 Reenviando a: ${destinationUrl}`);
+      
+      // 📤 Reenviar los datos transformados
+      const response = await fetch(destinationUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": token,
+          "X-Source": "deno-oracle-proxy",
+          "X-Operation": "process"
+        },
+        body: JSON.stringify(transformedData)
+      });
+      
+      const responseData = await response.text();
+      console.log(`📥 Respuesta de ${destinationUrl} (${response.status}):`, responseData);
+      
+      // ✅ Devolver respuesta consolidada
+      return new Response(JSON.stringify({
+        success: true,
+        endpoint: "/api/oracle/proc",
+        message: "Datos procesados y reenviados exitosamente",
+        receivedData: inputData,
+        forwardResponse: {
+          status: response.status,
+          statusText: response.statusText,
+          data: responseData
+        },
+        destinationUrl: destinationUrl,
+        timestamp: new Date().toISOString()
+      }), {
+        status: 200,
+        headers: { 
+          "Content-Type": "application/json",
+          "Access-Control-Allow-Origin": "*"
+        }
+      });
+      
+    } catch (forwardError) {
+      console.error(`❌ Error reenviando a ${destinationUrl}:`, forwardError);
+      
+      // ❌ Error en el reenvío
+      return new Response(JSON.stringify({
+        success: false,
+        endpoint: "/api/oracle/proc",
+        message: "Error en el reenvío a la API destino",
+        receivedData: inputData,
+        forwardError: forwardError instanceof Error ? forwardError.message : "Error desconocido",
+        destinationUrl: destinationUrl,
+        timestamp: new Date().toISOString()
+      }), {
+        status: 500,
+        headers: { 
+          "Content-Type": "application/json",
+          "Access-Control-Allow-Origin": "*"
+        }
+      });
+    }
+    
+  } catch (error) {
+    console.error("❌ Error en procHandler:", error);
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : "Error procesando petición"
+    }), {
+      status: 500,
+      headers: { 
+        "Content-Type": "application/json",
+        "Access-Control-Allow-Origin": "*"
+      }
+    });
   }
 }
 

@@ -45,8 +45,12 @@ export interface ErrorResponse {
 export type ApiResponse = SingleObjectResponse | ArrayResponse | ErrorResponse;
 
 export interface ForwardResponse {
+  success: boolean;
   error?: string;
   status?: number;
+  data?: unknown;
+  url?: string;
+  destinationUrl?: string;
   details?: unknown;
   [key: string]: unknown;
 }

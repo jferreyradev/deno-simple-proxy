@@ -5,7 +5,8 @@
 import type { ApiResponse, ErrorResponse, ForwardResponse } from "./types.ts";
 import { Router } from "./router.ts";
 import { 
-  convertToOracleHandler, 
+  convertToOracleHandler,
+  procHandler,
   healthHandler, 
   infoHandler, 
   examplesHandler, 
@@ -33,8 +34,17 @@ interface CorsConfig {
 
 let CORS_CONFIG: CorsConfig = {
   origins: ["*"],
-  methods: ["GET", "POST", "OPTIONS"],
-  headers: ["Content-Type", "Authorization", "X-Requested-With"],
+  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+  headers: [
+    "Content-Type", 
+    "Authorization", 
+    "X-Requested-With",
+    "Accept",
+    "Origin",
+    "X-Api-Key",
+    "X-Source",
+    "X-Client-Version"
+  ],
   credentials: false
 };
 
@@ -57,6 +67,16 @@ interface EndpointTransformer {
 
 let ENDPOINT_TRANSFORMERS: Map<string, EndpointTransformer> = new Map();
 
+// 🎯 Sistema de destinos múltiples por endpoint
+interface EndpointDestination {
+  url: string;
+  method: string;
+  headers: Record<string, string>;
+  description?: string;
+}
+
+let ENDPOINT_DESTINATIONS: Map<string, EndpointDestination> = new Map();
+
 export function setDestinationAPI(
   url: string, 
   method: string = "POST", 
@@ -69,6 +89,33 @@ export function setDestinationAPI(
   if (Object.keys(headers).length > 0) {
     console.log(`📋 Headers personalizados:`, headers);
   }
+}
+
+/**
+ * 🎯 Configura múltiples destinos por endpoint
+ * @param routes - Array de configuraciones de rutas con sus destinos
+ */
+export function setDestinationRoutes(routes: Array<{
+  pattern: string;
+  destination: {
+    url: string;
+    method: string;
+    headers: Record<string, string>;
+  };
+  description?: string;
+}>): void {
+  routes.forEach(route => {
+    ENDPOINT_DESTINATIONS.set(route.pattern, {
+      url: route.destination.url,
+      method: route.destination.method.toUpperCase(),
+      headers: route.destination.headers,
+      description: route.description
+    });
+    console.log(`🎯 Destino configurado para ${route.pattern}: ${route.destination.method} ${route.destination.url}`);
+    if (route.description) {
+      console.log(`   📝 ${route.description}`);
+    }
+  });
 }
 
 /**
@@ -189,17 +236,30 @@ function getCorsHeaders(req: Request): Record<string, string> {
 }
 
 function handleOptionsRequest(req: Request): Response {
+  const origin = req.headers.get("origin");
+  const requestedMethod = req.headers.get("access-control-request-method");
+  const requestedHeaders = req.headers.get("access-control-request-headers");
+  
   console.log("🔒 Handling CORS preflight request");
+  console.log(`   Origin: ${origin}`);
+  console.log(`   Requested Method: ${requestedMethod}`);
+  console.log(`   Requested Headers: ${requestedHeaders}`);
+  
+  const corsHeaders = getCorsHeaders(req);
+  console.log("📋 CORS headers enviados:", corsHeaders);
   
   return new Response(null, {
     status: 200,
-    headers: getCorsHeaders(req)
+    headers: corsHeaders
   });
 }
 
 const router = new Router();
 
 router.post("/api/oracle/convert", convertToOracleHandler);
+router.post("/api/oracle/proc", procHandler);
+router.post("/api/validate", validateHandler);
+
 router.get("/api/health", (_req: Request) => Promise.resolve(healthHandler()));
 router.get("/api/info", (_req: Request) => Promise.resolve(infoHandler()));
 router.get("/api/examples", (_req: Request) => Promise.resolve(examplesHandler()));
@@ -260,14 +320,14 @@ export async function handleRequest(req: Request): Promise<Response> {
               Date.now() - startTime
             );
 
-            const forwardResult = await forwardToDestinationAPI(responseData, requestBody);
+            const forwardResult = await forwardToDestinationAPI(responseData, requestBody, url.pathname);
             
             const finalResponse = {
               ...responseData,
               forwarded: {
                 success: forwardResult !== null && !forwardResult.error,
                 response: forwardResult,
-                destinationUrl: DESTINATION_API_URL
+                destinationUrl: forwardResult?.destinationUrl || DESTINATION_API_URL
               }
             };
 
@@ -400,8 +460,33 @@ export async function handleRequest(req: Request): Promise<Response> {
   }
 }
 
-async function forwardToDestinationAPI(sqlData: ApiResponse, originalData: unknown): Promise<ForwardResponse | null> {
-  if (!DESTINATION_API_URL) {
+async function forwardToDestinationAPI(
+  sqlData: ApiResponse, 
+  originalData: unknown, 
+  endpoint?: string
+): Promise<ForwardResponse | null> {
+  
+  // 🎯 Buscar destino específico para este endpoint
+  let destinationConfig: EndpointDestination | null = null;
+  let destinationUrl = DESTINATION_API_URL;
+  let destinationMethod = DESTINATION_API_METHOD;
+  let destinationHeaders = DESTINATION_API_HEADERS;
+
+  if (endpoint) {
+    // Buscar configuración específica para este endpoint
+    for (const [pattern, config] of ENDPOINT_DESTINATIONS.entries()) {
+      if (endpoint === pattern || endpoint.includes(pattern.replace('*', ''))) {
+        destinationConfig = config;
+        destinationUrl = config.url;
+        destinationMethod = config.method;
+        destinationHeaders = config.headers;
+        await logger.info(`🎯 Usando destino específico para ${endpoint}: ${config.url}`);
+        break;
+      }
+    }
+  }
+
+  if (!destinationUrl) {
     await logger.warn("No hay API destino configurada para reenvío");
     return null;
   }
@@ -409,14 +494,14 @@ async function forwardToDestinationAPI(sqlData: ApiResponse, originalData: unkno
   const forwardStartTime = Date.now();
 
   try {
-    await logger.info(`🚀 Iniciando reenvío a: ${DESTINATION_API_URL}`);
+    await logger.info(`🚀 Iniciando reenvío a: ${destinationUrl}`);
     
     // 🎯 Obtener configuración específica para este endpoint
-    const endpointConfig = getEndpointConfig(DESTINATION_API_URL);
+    const endpointConfig = getEndpointConfig(destinationUrl);
     
     // 📝 Log de configuración del endpoint
     await logger.info(`📋 Configuración endpoint:`, {
-      url: DESTINATION_API_URL,
+      url: destinationUrl,
       method: endpointConfig.method,
       hasCustomTransformer: !!endpointConfig.transformer,
       headersCount: Object.keys(endpointConfig.headers).length
@@ -450,25 +535,26 @@ async function forwardToDestinationAPI(sqlData: ApiResponse, originalData: unkno
       payload: forwardPayload
     });
 
-    console.log(`📦 PAYLOAD ENVIADO A ${DESTINATION_API_URL}:`);
+    console.log(`📦 PAYLOAD ENVIADO A ${destinationUrl}:`);
     console.log(JSON.stringify(forwardPayload, null, 2));
 
     // 📝 Log de headers que se envían
     const requestHeaders = {
       "Content-Type": "application/json",
       "User-Agent": "Deno-Oracle-Proxy/1.0",
+      ...destinationHeaders,
       ...endpointConfig.headers
     };
     
     await logger.info(`📤 Enviando petición:`, {
-      url: DESTINATION_API_URL,
-      method: endpointConfig.method,
+      url: destinationUrl,
+      method: destinationMethod,
       headers: requestHeaders,
       bodySize: JSON.stringify(forwardPayload).length
     });
 
-    const response = await fetch(DESTINATION_API_URL, {
-      method: endpointConfig.method,
+    const response = await fetch(destinationUrl, {
+      method: destinationMethod,
       headers: requestHeaders,
       body: JSON.stringify(forwardPayload)
     });
@@ -478,7 +564,7 @@ async function forwardToDestinationAPI(sqlData: ApiResponse, originalData: unkno
     
     // 📝 Log detallado de la respuesta
     await logger.info(`📥 Respuesta recibida:`, {
-      url: DESTINATION_API_URL,
+      url: destinationUrl,
       status: response.status,
       statusText: response.statusText,
       success: response.ok,
@@ -487,7 +573,7 @@ async function forwardToDestinationAPI(sqlData: ApiResponse, originalData: unkno
       responseData: responseData
     });
 
-    console.log(`📥 RESPUESTA DE ${DESTINATION_API_URL} (${response.status}):`);
+    console.log(`📥 RESPUESTA DE ${destinationUrl} (${response.status}):`);
     console.log(`⏱️  Tiempo de procesamiento: ${processingTime}ms`);
     console.log(JSON.stringify(responseData, null, 2));
     
@@ -495,13 +581,14 @@ async function forwardToDestinationAPI(sqlData: ApiResponse, originalData: unkno
       success: response.ok,
       status: response.status,
       data: responseData,
-      url: DESTINATION_API_URL
+      url: destinationUrl,
+      destinationUrl: destinationUrl
     };
 
     // Logear el reenvío completo
     await logger.logApiForward(
-      DESTINATION_API_URL,
-      endpointConfig.method,
+      destinationUrl,
+      destinationMethod,
       forwardPayload as Record<string, unknown>,
       { status: response.status, data: responseData },
       processingTime
@@ -509,22 +596,22 @@ async function forwardToDestinationAPI(sqlData: ApiResponse, originalData: unkno
 
     if (response.ok) {
       await logger.info(`✅ Reenvío exitoso`, {
-        url: DESTINATION_API_URL,
+        url: destinationUrl,
         status: response.status,
         processingTime: `${processingTime}ms`,
         success: true
       });
-      console.log(`✅ Reenvío exitoso a ${DESTINATION_API_URL} - ${response.status} (${processingTime}ms)`);
+      console.log(`✅ Reenvío exitoso a ${destinationUrl} - ${response.status} (${processingTime}ms)`);
     } else {
       await logger.error(`❌ Error en reenvío`, {
-        url: DESTINATION_API_URL,
+        url: destinationUrl,
         status: response.status,
         statusText: response.statusText,
         processingTime: `${processingTime}ms`,
         responseData,
         success: false
       });
-      console.log(`❌ Error en reenvío a ${DESTINATION_API_URL} - ${response.status}: ${response.statusText}`);
+      console.log(`❌ Error en reenvío a ${destinationUrl} - ${response.status}: ${response.statusText}`);
     }
 
     return result;
@@ -534,19 +621,20 @@ async function forwardToDestinationAPI(sqlData: ApiResponse, originalData: unkno
     await logger.error(`🚨 Excepción en reenvío`, {
       error: error instanceof Error ? error.message : String(error),
       stack: error instanceof Error ? error.stack : undefined,
-      url: DESTINATION_API_URL,
+      url: destinationUrl,
       duration: `${errorTime}ms`,
       timestamp: new Date().toISOString()
     });
     
-    console.log(`🚨 EXCEPCIÓN EN REENVÍO A ${DESTINATION_API_URL}:`);
+    console.log(`🚨 EXCEPCIÓN EN REENVÍO A ${destinationUrl}:`);
     console.log(`❌ Error: ${error instanceof Error ? error.message : String(error)}`);
     console.log(`⏱️  Duración hasta fallo: ${errorTime}ms`);
     
     return {
       success: false,
       error: error instanceof Error ? error.message : "Error desconocido en reenvío",
-      url: DESTINATION_API_URL
+      url: destinationUrl,
+      destinationUrl: destinationUrl
     };
   }
 }
@@ -561,6 +649,7 @@ export function startServer(port: number = 8003): void {
       "GET /api/info", 
       "GET /api/examples",
       "POST /api/oracle/convert",
+      "POST /api/oracle/proc",
       "POST /api/validate"
     ]
   });
@@ -571,6 +660,7 @@ export function startServer(port: number = 8003): void {
   console.log("   • GET /api/info - Información de la API");
   console.log("   • GET /api/examples - Ejemplos de uso");
   console.log("   • POST /api/oracle/convert - Conversión JSON a Oracle SQL");
+  console.log("   • 🔧 POST /api/oracle/proc - Procesamiento de datos");
   console.log("   • POST /api/validate - Validar JSON");
 
   // Usar Deno.serve nativo en lugar de importar
